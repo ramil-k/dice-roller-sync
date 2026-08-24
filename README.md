@@ -24,6 +24,12 @@ different tokens/fields merge without losing either side.
 | `GET /rooms/<code>` | `{exists}` / 404 |
 | `WS /ws/<code>` | y-websocket sync protocol (yjs 13, awareness included) |
 
+The REST routes answer `Access-Control-Allow-Origin: *` - there are no
+credentials or secrets in the API beyond the room code itself, and the
+client is a static site served from arbitrary GitHub Pages origins (forks
+included). Awareness (the client's presence: cursors, focused fields, names,
+colors) is relayed between connected peers only and never persisted.
+
 The websocket handler is vendored in `src/wsdoc.js` (adapted from the
 reference y-websocket server) so the whole process runs on a single stable
 `yjs@13` - the published server packages currently depend on yjs 14
@@ -46,5 +52,8 @@ Runs on `universal.ramilkarimov.me` behind nginx:
 checkout in `/opt/dice-roller-sync`).
 
 Push to `main` deploys: the GitHub Actions workflow connects over SSH with a
-deploy key whose forced command runs `deploy-remote.sh` on the server
-(git reset to origin/main + `docker compose up -d --build` + health check).
+deploy key (`DEPLOY_SSH_KEY` secret) whose forced command runs
+`deploy-remote.sh` on the server (git reset to origin/main +
+`docker compose up -d --build` + health check), then smoke-tests
+`/health` from the outside. The workflow also has `workflow_dispatch`, so
+`gh workflow run deploy.yml` redeploys the current `main` by hand.
