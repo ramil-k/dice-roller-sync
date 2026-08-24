@@ -18,26 +18,19 @@ const PORT = Number(process.env.PORT ?? 3000);
 const DATA_DIR = process.env.DATA_DIR ?? './data';
 const MAX_PAYLOAD = 32 * 1024 * 1024; // encounter docs carry data-URI images
 
-// Origins allowed to call the REST API (the ws handshake is gated by the
-// room code instead - browsers do not enforce CORS on WebSocket anyway).
-const ORIGIN_ALLOW = [
-  /^https:\/\/ramil-k\.github\.io$/,
-  /^https?:\/\/localhost(:\d+)?$/,
-  /^https?:\/\/127\.0\.0\.1(:\d+)?$/,
-];
-
 const registry = createRegistry(DATA_DIR);
 
 setPersistence(createFilePersistence(`${DATA_DIR}/yjs`));
 
-const cors = (req, res) => {
-  const origin = req.headers.origin;
-  if (origin && ORIGIN_ALLOW.some((re) => re.test(origin))) {
-    res.setHeader('Access-Control-Allow-Origin', origin);
-    res.setHeader('Vary', 'Origin');
-    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-  }
+// The REST API is open to any origin: it carries no credentials and nothing
+// sensitive - the room code itself is the secret (and the ws handshake is
+// gated by it; browsers do not enforce CORS on WebSocket anyway). An origin
+// allowlist here only breaks legitimate mirrors of the site (custom domains,
+// LAN dev servers) without protecting anything.
+const cors = (_req, res) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 };
 
 const json = (res, status, body) => {
