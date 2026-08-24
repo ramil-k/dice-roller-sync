@@ -1,0 +1,24 @@
+{
+  "name": "dice-roller-sync",
+  "version": "0.1.0",
+  "description": "Yjs-based sync server for the dice-roller battle mat",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "start": "node src/server.js",
+    "test": "vitest run"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "lib0": "^0.2.117",
+    "ws": "^8.21.3",
+    "y-protocols": "^1.0.7",
+    "y-websocket": "^3.1.0",
+    "yjs": "^13.6.32"
+  },
+  "devDependencies": {
+    "vitest": "^4.1.11"
+  }
+}

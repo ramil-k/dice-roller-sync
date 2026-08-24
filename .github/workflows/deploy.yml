@@ -1,0 +1,20 @@
+name: Deploy
+on:
+  push:
+    branches: [main]
+concurrency: deploy
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy over SSH (forced command on the server pulls and restarts)
+        env:
+          SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan universal.ramilkarimov.me >> ~/.ssh/known_hosts 2>/dev/null
+          ssh root@universal.ramilkarimov.me deploy
+      - name: Smoke check
+        run: curl -fsS https://universal.ramilkarimov.me:9443/health

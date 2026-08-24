@@ -1,0 +1,10 @@
+services:
+  sync:
+    build: .
+    image: dice-roller-sync
+    container_name: dice-roller-sync
+    restart: unless-stopped
+    volumes:
+      - ./data:/data
+    ports:
+      - '127.0.0.1:6120:3000'
