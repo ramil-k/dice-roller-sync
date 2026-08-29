@@ -97,6 +97,33 @@ describe('sync server', () => {
     expect((await post(code, 'image/jpeg', Buffer.alloc(64 * 1024 + 1))).status).toBe(413);
   });
 
+  it('lists rooms with live connection counts and player names', async () => {
+    const { code: busy } = await (await fetch(`${base}/rooms`, { method: 'POST' })).json();
+    const { code: idle } = await (await fetch(`${base}/rooms`, { method: 'POST' })).json();
+    const a = connect(busy);
+    await a.synced;
+    a.provider.awareness.setLocalStateField('user', { name: 'Sneaky Ramil', color: '#58b7d8' });
+    await new Promise((r) => setTimeout(r, 150));
+
+    const { rooms } = await (await fetch(`${base}/rooms`)).json();
+    const b = rooms.find((r) => r.code === busy);
+    const i = rooms.find((r) => r.code === idle);
+    expect(b.connections).toBe(1);
+    expect(b.players).toEqual([{ name: 'Sneaky Ramil', color: '#58b7d8' }]);
+    expect(b.lastActiveAt >= b.createdAt).toBe(true);
+    expect(i.connections).toBe(0);
+    expect(i.players).toEqual([]);
+    expect(rooms.indexOf(b)).toBeLessThan(rooms.indexOf(i)); // busy rooms first
+
+    const one = await (await fetch(`${base}/rooms/${busy}`)).json();
+    expect(one).toMatchObject({ exists: true, code: busy, connections: 1 });
+
+    a.provider.destroy();
+    await new Promise((r) => setTimeout(r, 200));
+    const after = (await (await fetch(`${base}/rooms`)).json()).rooms.find((r) => r.code === busy);
+    expect(after.connections).toBe(0);
+  });
+
   it('rejects ws connections to unknown rooms', async () => {
     const ws = new WebSocket(`${base.replace('http', 'ws')}/ws/nope-nope-0000`);
     const err = await new Promise((res) => {

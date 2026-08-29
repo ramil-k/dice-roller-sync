@@ -11,7 +11,9 @@ different tokens/fields merge without losing either side.
   (`brave-otter-4821`) is both the address and the secret - anyone who knows
   it is in. Switching encounters = switching codes.
 - Rooms are created only via `POST /rooms` (joining an unknown code is
-  rejected - typo protection).
+  rejected - typo protection). `GET /rooms` lists them all, codes included -
+  the battle screen shows that list, so a code is *not* a secret against
+  anyone who can open the site; the server is meant for one private table.
 - Persistence: a merged Yjs update blob per room under `data/yjs/`, plus
   `data/rooms.json` as the room registry. No database.
 - Images: the client uploads attached map images here instead of embedding
@@ -25,7 +27,8 @@ different tokens/fields merge without losing either side.
 | --- | --- |
 | `GET /health` | `{ok: true}` |
 | `POST /rooms` | create a room, returns `{code}` |
-| `GET /rooms/<code>` | `{exists}` / 404 |
+| `GET /rooms` | `{rooms: [{code, createdAt, lastActiveAt, connections, players: [{name, color}]}]}` - every room, busiest first; `connections` and `players` (awareness `user` states) are live |
+| `GET /rooms/<code>` | `{exists: true, ...the same fields}` / 404 |
 | `POST /rooms/<code>/images` | upload one image (body: raw bytes, `Content-Type: image/png\|jpeg\|webp\|gif`, up to `MAX_IMAGE_BYTES`, 16 MiB by default); returns `{id, path}` - content-addressed, so the same bytes always get the same id |
 | `GET /rooms/<code>/images/<id>` | the image, `Cache-Control: immutable` |
 | `WS /ws/<code>` | y-websocket sync protocol (yjs 13, awareness included) |

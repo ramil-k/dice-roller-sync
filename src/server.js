@@ -1,8 +1,12 @@
 // dice-roller-sync: Yjs WebSocket sync server for the battle-mat encounter.
 //
 // REST:  GET  /health                    -> { ok: true }
-//        POST /rooms                     -> { code }   (create a room; the code is the secret)
-//        GET  /rooms/<code>              -> { exists } (client-side validation before joining)
+//        POST /rooms                     -> { code }   (create a room)
+//        GET  /rooms                     -> { rooms: [...] } every room with its live
+//                                           connection count and player names (the
+//                                           battle screen's room list - so the codes
+//                                           are visible to anyone who opens the site)
+//        GET  /rooms/<code>              -> { exists, ...same fields } / 404
 //        POST /rooms/<code>/images       -> { id, path } (body: raw image bytes, Content-Type
 //                                           image/png|jpeg|webp|gif, up to MAX_IMAGE_BYTES)
 //        GET  /rooms/<code>/images/<id>  -> the image, cacheable forever (content-addressed)
@@ -13,7 +17,7 @@
 import { createServer } from 'node:http';
 import { pathToFileURL } from 'node:url';
 import { WebSocketServer } from 'ws';
-import { setPersistence, setupWSConnection } from './wsdoc.js';
+import { docs, setPersistence, setupWSConnection } from './wsdoc.js';
 import { createFilePersistence } from './persistence.js';
 import { createRegistry } from './registry.js';
 import { createImageStore, IMAGE_TYPES } from './images.js';
@@ -40,6 +44,31 @@ const cors = (_req, res) => {
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 };
+
+// Live view of a room: how many sockets are on it and who they say they
+// are (awareness `user` states - peer-supplied, so clipped to the shape the
+// client renders anyway).
+const liveRoom = (entry) => {
+  const doc = docs.get(entry.code);
+  const players = [];
+  if (doc) {
+    doc.awareness.getStates().forEach((state) => {
+      const u = state?.user;
+      if (!u || typeof u.name !== 'string') return;
+      players.push({
+        name: u.name.slice(0, 32),
+        color: typeof u.color === 'string' && /^#[0-9a-fA-F]{3,8}$/.test(u.color) ? u.color : null,
+      });
+    });
+  }
+  return { ...entry, connections: doc?.conns.size ?? 0, players };
+};
+
+const roomList = () =>
+  registry
+    .entries()
+    .map(liveRoom)
+    .sort((a, b) => b.connections - a.connections || (a.lastActiveAt < b.lastActiveAt ? 1 : -1));
 
 const json = (res, status, body) => {
   res.writeHead(status, { 'Content-Type': 'application/json' });
@@ -109,11 +138,14 @@ export const createSyncServer = () => {
     if (req.method === 'POST' && pathname === '/rooms') {
       return json(res, 201, { code: registry.create() });
     }
+    if (req.method === 'GET' && pathname === '/rooms') {
+      return json(res, 200, { rooms: roomList() });
+    }
     const roomMatch = pathname.match(/^\/rooms\/([a-z0-9-]+)$/);
     if (req.method === 'GET' && roomMatch) {
-      return json(res, registry.has(roomMatch[1]) ? 200 : 404, {
-        exists: registry.has(roomMatch[1]),
-      });
+      const entry = registry.entries().find((r) => r.code === roomMatch[1]);
+      if (!entry) return json(res, 404, { exists: false });
+      return json(res, 200, { exists: true, ...liveRoom(entry) });
     }
     try {
       if ((await imageRoutes(req, res, pathname)) !== false) return;
@@ -135,6 +167,7 @@ export const createSyncServer = () => {
       socket.write('HTTP/1.1 404 Not Found\r\n\r\n');
       return socket.destroy();
     }
+    registry.touch(room);
     wss.handleUpgrade(req, socket, head, (conn) => {
       wss.emit('connection', conn, req, room);
     });

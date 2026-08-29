@@ -32,6 +32,20 @@ export const createRegistry = (dataDir) => {
       persist();
       return code;
     },
+    // A client connected to the room - remember when it was last used, so
+    // the room list can be sorted by recency (and stale rooms spotted).
+    touch: (code) => {
+      if (!Object.hasOwn(rooms, code)) return;
+      rooms[code].lastActiveAt = new Date().toISOString();
+      persist();
+    },
     list: () => Object.keys(rooms),
+    // [{ code, createdAt, lastActiveAt }] - lastActiveAt falls back to createdAt
+    entries: () =>
+      Object.entries(rooms).map(([code, r]) => ({
+        code,
+        createdAt: r.createdAt,
+        lastActiveAt: r.lastActiveAt ?? r.createdAt,
+      })),
   };
 };
