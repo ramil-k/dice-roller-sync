@@ -14,6 +14,10 @@ different tokens/fields merge without losing either side.
   rejected - typo protection).
 - Persistence: a merged Yjs update blob per room under `data/yjs/`, plus
   `data/rooms.json` as the room registry. No database.
+- Images: the client uploads attached map images here instead of embedding
+  them as data URIs in the Yjs doc; files live under `data/images/<code>/`
+  and are never deleted (a room's pictures are tiny next to what the CRDT
+  used to carry). Bodies pass through nginx's `client_max_body_size 32m`.
 
 ## API
 
@@ -22,6 +26,8 @@ different tokens/fields merge without losing either side.
 | `GET /health` | `{ok: true}` |
 | `POST /rooms` | create a room, returns `{code}` |
 | `GET /rooms/<code>` | `{exists}` / 404 |
+| `POST /rooms/<code>/images` | upload one image (body: raw bytes, `Content-Type: image/png\|jpeg\|webp\|gif`, up to `MAX_IMAGE_BYTES`, 16 MiB by default); returns `{id, path}` - content-addressed, so the same bytes always get the same id |
+| `GET /rooms/<code>/images/<id>` | the image, `Cache-Control: immutable` |
 | `WS /ws/<code>` | y-websocket sync protocol (yjs 13, awareness included) |
 
 The REST routes answer `Access-Control-Allow-Origin: *` - there are no
@@ -43,7 +49,7 @@ npm test          # vitest, includes an end-to-end concurrent-merge test
 npm start         # listens on :3000, data in ./data
 ```
 
-Env: `PORT` (3000), `DATA_DIR` (./data).
+Env: `PORT` (3000), `DATA_DIR` (./data), `MAX_IMAGE_BYTES` (16 MiB).
 
 ## Deployment
 
