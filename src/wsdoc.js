@@ -14,6 +14,27 @@ const MESSAGE_AWARENESS = 1;
 const PING_TIMEOUT = 30000;
 const WS_OPEN = 1;
 
+// Client version gate. A page that was open before a client deploy keeps
+// running the old bundle indefinitely - and an old bridge can undo other
+// peers' edits (it once re-created every node a peer deleted). So clients
+// announce their bridge version as awareness field `v`, and a connection
+// is *verified* only once an awareness state it owns carries
+// v >= minClientVersion. Until then its sync messages are queued, not
+// applied (and it gets no sync reply, so it never sees state to react
+// to); a state without/with a lower `v`, or no verification within
+// VERIFY_TIMEOUT, closes the socket with CLOSE_OUTDATED - new clients stop
+// reconnecting on that code and ask for a reload, old ones keep retrying
+// harmlessly. 0 disables the gate. (Clients must run with y-websocket's
+// BroadcastChannel off: with it on, a verified tab relays a same-origin
+// stale tab's edits to the server as its own.)
+export const CLOSE_OUTDATED = 4001;
+const VERIFY_TIMEOUT = 3000;
+const QUEUE_LIMIT = 64;
+let minClientVersion = 0;
+export const setMinClientVersion = (v) => {
+  minClientVersion = Number(v) || 0;
+};
+
 /** @type {Map<string, WSSharedDoc>} live docs by room code */
 export const docs = new Map();
 
@@ -110,11 +131,54 @@ const closeConn = (doc, conn) => {
   }
 };
 
+const rejectOutdated = (doc, conn) => {
+  clearTimeout(conn.verifyTimer);
+  const owned = doc.conns.get(conn);
+  if (owned) {
+    doc.conns.delete(conn);
+    awarenessProtocol.removeAwarenessStates(doc.awareness, [...owned], null);
+  }
+  try {
+    conn.close(CLOSE_OUTDATED, 'client too old');
+  } catch {
+    // already gone
+  }
+  if (doc.conns.size === 0) closeConn(doc, conn); // runs the last-one-out persistence
+};
+
+// After an awareness update from `conn`: verify or reject it by the `v` of
+// the states it owns. States with no fields yet are neither (keep waiting).
+const checkVersion = (doc, conn) => {
+  if (conn.verified) return;
+  const owned = doc.conns.get(conn);
+  if (!owned) return;
+  for (const clientId of owned) {
+    const state = doc.awareness.getStates().get(clientId);
+    if (!state || Object.keys(state).length === 0) continue;
+    const v = Number(state.v);
+    if (Number.isFinite(v) && v >= minClientVersion) {
+      conn.verified = true;
+      clearTimeout(conn.verifyTimer);
+      const queued = conn.queued;
+      conn.queued = [];
+      for (const message of queued) messageListener(conn, doc, message);
+      return;
+    }
+    rejectOutdated(doc, conn);
+    return;
+  }
+};
+
 const messageListener = (conn, doc, message) => {
   try {
     const decoder = decoding.createDecoder(message);
     const messageType = decoding.readVarUint(decoder);
     if (messageType === MESSAGE_SYNC) {
+      if (!conn.verified) {
+        if (conn.queued.length >= QUEUE_LIMIT) return rejectOutdated(doc, conn);
+        conn.queued.push(message);
+        return;
+      }
       const encoder = encoding.createEncoder();
       encoding.writeVarUint(encoder, MESSAGE_SYNC);
       syncProtocol.readSyncMessage(decoder, encoder, doc, conn);
@@ -127,6 +191,7 @@ const messageListener = (conn, doc, message) => {
         decoding.readVarUint8Array(decoder),
         conn,
       );
+      checkVersion(doc, conn);
     }
   } catch (err) {
     console.error('failed to handle message', err);
@@ -137,6 +202,13 @@ export const setupWSConnection = (conn, docName) => {
   conn.binaryType = 'arraybuffer';
   const doc = getYDoc(docName);
   doc.conns.set(conn, new Set());
+  conn.verified = minClientVersion === 0;
+  conn.queued = [];
+  if (!conn.verified) {
+    conn.verifyTimer = setTimeout(() => {
+      if (!conn.verified && doc.conns.has(conn)) rejectOutdated(doc, conn);
+    }, VERIFY_TIMEOUT);
+  }
 
   conn.on('message', (message) => messageListener(conn, doc, new Uint8Array(message)));
 
@@ -160,6 +232,7 @@ export const setupWSConnection = (conn, docName) => {
     pongReceived = true;
   });
   conn.on('close', () => {
+    clearTimeout(conn.verifyTimer);
     closeConn(doc, conn);
     clearInterval(pingInterval);
   });

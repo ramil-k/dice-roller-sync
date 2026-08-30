@@ -10,14 +10,15 @@
 //        POST /rooms/<code>/images       -> { id, path } (body: raw image bytes, Content-Type
 //                                           image/png|jpeg|webp|gif, up to MAX_IMAGE_BYTES)
 //        GET  /rooms/<code>/images/<id>  -> the image, cacheable forever (content-addressed)
-// WS:    /ws/<code>                      -> y-websocket sync protocol (rejects unknown codes)
+// WS:    /ws/<code>                      -> y-websocket sync protocol (rejects unknown codes;
+//                                           clients must announce awareness `v` >= MIN_CLIENT_VERSION)
 //
 // Persistence: merged Yjs update blobs under DATA_DIR + rooms.json (registry)
 // + uploaded images under DATA_DIR/images/<code>/.
 import { createServer } from 'node:http';
 import { pathToFileURL } from 'node:url';
 import { WebSocketServer } from 'ws';
-import { docs, setPersistence, setupWSConnection } from './wsdoc.js';
+import { docs, setMinClientVersion, setPersistence, setupWSConnection } from './wsdoc.js';
 import { createFilePersistence } from './persistence.js';
 import { createRegistry } from './registry.js';
 import { createImageStore, IMAGE_TYPES } from './images.js';
@@ -28,11 +29,14 @@ const DATA_DIR = process.env.DATA_DIR ?? './data';
 const MAX_PAYLOAD = 32 * 1024 * 1024; // older encounter docs still carry data-URI images
 // the client downscales to 2048px before uploading; nginx caps bodies at 32m
 const MAX_IMAGE_BYTES = Number(process.env.MAX_IMAGE_BYTES ?? 16 * 1024 * 1024);
+// bridge version the client must announce (awareness `v`); see wsdoc.js
+const MIN_CLIENT_VERSION = Number(process.env.MIN_CLIENT_VERSION ?? 2);
 
 const registry = createRegistry(DATA_DIR);
 const images = createImageStore(`${DATA_DIR}/images`);
 
 setPersistence(createFilePersistence(`${DATA_DIR}/yjs`));
+setMinClientVersion(MIN_CLIENT_VERSION);
 
 // The REST API is open to any origin: it carries no credentials and nothing
 // sensitive - the room code itself is the secret (and the ws handshake is

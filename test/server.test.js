@@ -23,11 +23,14 @@ beforeAll(async () => {
 
 afterAll(() => new Promise((res) => server.close(res)));
 
-const connect = (room) => {
+const connect = (room, { version = 2 } = {}) => {
   const doc = new Y.Doc();
   const provider = new WebsocketProvider(`${base.replace('http', 'ws')}/ws`, room, doc, {
     WebSocketPolyfill: WebSocket,
+    disableBc: true, // like the real client: no cross-tab relay around the server
   });
+  // the version gate: clients announce their bridge version in awareness
+  if (version !== null) provider.awareness.setLocalStateField('v', version);
   const synced = new Promise((res) => provider.once('sync', res));
   return { doc, provider, synced };
 };
@@ -164,6 +167,26 @@ describe('sync server', () => {
     a.provider.destroy();
     b.provider.destroy();
   });
+
+  it('closes clients that do not announce a recent version, without applying their edits', async () => {
+    const { code } = await (await fetch(`${base}/rooms`, { method: 'POST' })).json();
+    const good = connect(code);
+    await good.synced;
+    good.doc.getMap('meta').set('combat.round', 2);
+
+    for (const version of [null, 1]) {
+      const old = connect(code, { version });
+      const closed = new Promise((res) => old.provider.on('connection-close', (ev) => res(ev?.code)));
+      old.doc.getMap('meta').set('combat.round', 99); // would be sent on connect
+      expect(await closed).toBe(4001);
+      old.provider.shouldConnect = false;
+      old.provider.destroy();
+    }
+    await new Promise((r) => setTimeout(r, 200));
+    expect(good.doc.getMap('meta').get('combat.round')).toBe(2);
+    expect((await (await fetch(`${base}/rooms/${code}`)).json()).connections).toBe(1);
+    good.provider.destroy();
+  }, 15000); // the versionless client is only rejected after the 3 s verify timeout
 
   it('persists room state for late joiners after everyone left', async () => {
     const { code } = await (await fetch(`${base}/rooms`, { method: 'POST' })).json();

@@ -31,7 +31,7 @@ different tokens/fields merge without losing either side.
 | `GET /rooms/<code>` | `{exists: true, ...the same fields}` / 404 |
 | `POST /rooms/<code>/images` | upload one image (body: raw bytes, `Content-Type: image/png\|jpeg\|webp\|gif`, up to `MAX_IMAGE_BYTES`, 16 MiB by default); returns `{id, path}` - content-addressed, so the same bytes always get the same id |
 | `GET /rooms/<code>/images/<id>` | the image, `Cache-Control: immutable` |
-| `WS /ws/<code>` | y-websocket sync protocol (yjs 13, awareness included) |
+| `WS /ws/<code>` | y-websocket sync protocol (yjs 13, awareness included); the client must announce its bridge version as awareness field `v` >= `MIN_CLIENT_VERSION` (default 2) - until it does its sync messages are queued, and a missing/lower version or 3 s of silence closes the socket with code 4001 (a stale tab running an old bundle cannot rewrite the room; new clients stop reconnecting on 4001 and ask for a reload) |
 
 The REST routes answer `Access-Control-Allow-Origin: *` - there are no
 credentials or secrets in the API beyond the room code itself, and the
@@ -52,7 +52,7 @@ npm test          # vitest, includes an end-to-end concurrent-merge test
 npm start         # listens on :3000, data in ./data
 ```
 
-Env: `PORT` (3000), `DATA_DIR` (./data), `MAX_IMAGE_BYTES` (16 MiB).
+Env: `PORT` (3000), `DATA_DIR` (./data), `MAX_IMAGE_BYTES` (16 MiB), `MIN_CLIENT_VERSION` (2; 0 disables the gate).
 
 ## Deployment
 
