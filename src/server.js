@@ -10,11 +10,17 @@
 //        POST /rooms/<code>/images       -> { id, path } (body: raw image bytes, Content-Type
 //                                           image/png|jpeg|webp|gif, up to MAX_IMAGE_BYTES)
 //        GET  /rooms/<code>/images/<id>  -> the image, cacheable forever (content-addressed)
+//        players, games, character assignments and Telegram login: see account-routes.js
 // WS:    /ws/<code>                      -> y-websocket sync protocol (rejects unknown codes;
 //                                           clients must announce awareness `v` >= MIN_CLIENT_VERSION)
 //
 // Persistence: merged Yjs update blobs under DATA_DIR + rooms.json (registry)
-// + uploaded images under DATA_DIR/images/<code>/.
+// + uploaded images under DATA_DIR/images/<code>/ + accounts.json (players,
+// games, assignments).
+//
+// Env: BOT_TOKEN (Telegram bot, enables login), GM_IDS (comma-separated
+// Telegram ids of game masters), SESSION_SECRET (optional, defaults to one
+// derived from BOT_TOKEN).
 import { createServer } from 'node:http';
 import { pathToFileURL } from 'node:url';
 import { WebSocketServer } from 'ws';
@@ -23,6 +29,10 @@ import { createFilePersistence } from './persistence.js';
 import { createRegistry } from './registry.js';
 import { createImageStore, IMAGE_TYPES } from './images.js';
 import { isValidCode } from './codes.js';
+import { createAccounts } from './accounts.js';
+import { createAccountRoutes } from './account-routes.js';
+import { sessionSecret } from './auth.js';
+import { json, readBody } from './http.js';
 
 const PORT = Number(process.env.PORT ?? 3000);
 const DATA_DIR = process.env.DATA_DIR ?? './data';
@@ -38,15 +48,17 @@ const images = createImageStore(`${DATA_DIR}/images`);
 setPersistence(createFilePersistence(`${DATA_DIR}/yjs`));
 setMinClientVersion(MIN_CLIENT_VERSION);
 
-// The REST API is open to any origin: it carries no credentials and nothing
-// sensitive - the room code itself is the secret (and the ws handshake is
-// gated by it; browsers do not enforce CORS on WebSocket anyway). An origin
-// allowlist here only breaks legitimate mirrors of the site (custom domains,
-// LAN dev servers) without protecting anything.
+// The REST API is open to any origin: room routes carry nothing sensitive -
+// the room code itself is the secret (and the ws handshake is gated by it;
+// browsers do not enforce CORS on WebSocket anyway) - and account routes
+// authenticate with a bearer token, not cookies, so a foreign page cannot
+// ride a player's session. An origin allowlist here only breaks legitimate
+// mirrors of the site (custom domains, LAN dev servers) without protecting
+// anything.
 const cors = (_req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
 };
 
 // Live view of a room: how many sockets are on it and who they say they
@@ -73,30 +85,6 @@ const roomList = () =>
     .entries()
     .map(liveRoom)
     .sort((a, b) => b.connections - a.connections || (a.lastActiveAt < b.lastActiveAt ? 1 : -1));
-
-const json = (res, status, body) => {
-  res.writeHead(status, { 'Content-Type': 'application/json' });
-  res.end(JSON.stringify(body));
-};
-
-// Buffer a request body up to `limit` bytes; resolves null when it is larger
-// (the socket is dropped - a client past the limit has nothing to wait for).
-const readBody = (req, limit) =>
-  new Promise((resolve, reject) => {
-    const chunks = [];
-    let size = 0;
-    req.on('data', (chunk) => {
-      size += chunk.length;
-      if (size > limit) {
-        resolve(null);
-        req.destroy();
-        return;
-      }
-      chunks.push(chunk);
-    });
-    req.on('end', () => resolve(Buffer.concat(chunks)));
-    req.on('error', reject);
-  });
 
 const imageRoutes = async (req, res, pathname) => {
   const upload = pathname.match(/^\/rooms\/([a-z0-9-]+)\/images$/);
@@ -128,6 +116,21 @@ const imageRoutes = async (req, res, pathname) => {
 };
 
 export const createSyncServer = () => {
+  const botToken = process.env.BOT_TOKEN ?? '';
+  const accountRoutes = createAccountRoutes({
+    accounts: createAccounts(DATA_DIR),
+    botToken,
+    secret: sessionSecret(botToken, process.env.SESSION_SECRET),
+    gmIds: new Set(
+      (process.env.GM_IDS ?? '')
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean)
+        .map(Number)
+        .filter(Number.isSafeInteger),
+    ),
+  });
+
   const server = createServer(async (req, res) => {
     cors(req, res);
     const { pathname } = new URL(req.url, 'http://x');
@@ -156,6 +159,12 @@ export const createSyncServer = () => {
     } catch (err) {
       console.error('image route failed', err);
       return json(res, 500, { error: 'image store failed' });
+    }
+    try {
+      if ((await accountRoutes(req, res, pathname)) !== false) return;
+    } catch (err) {
+      console.error('account route failed', err);
+      return json(res, 500, { error: 'account store failed' });
     }
     return json(res, 404, { error: 'not found' });
   });

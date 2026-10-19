@@ -4,6 +4,11 @@ services:
     image: dice-roller-sync
     container_name: dice-roller-sync
     restart: unless-stopped
+    # secrets live in /opt/dice-roller-sync/.env on the server (not in git)
+    environment:
+      BOT_TOKEN: ${BOT_TOKEN:-}
+      GM_IDS: ${GM_IDS:-}
+      SESSION_SECRET: ${SESSION_SECRET:-}
     volumes:
       - ./data:/data
     ports:
