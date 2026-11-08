@@ -24,7 +24,7 @@
 import { createServer } from 'node:http';
 import { pathToFileURL } from 'node:url';
 import { WebSocketServer } from 'ws';
-import { docs, setMinClientVersion, setPersistence, setupWSConnection } from './wsdoc.js';
+import { docs, setMinClientVersion, setPersistence, setupWSConnection, shutdownDocs } from './wsdoc.js';
 import { createFilePersistence } from './persistence.js';
 import { createRegistry } from './registry.js';
 import { createImageStore, IMAGE_TYPES } from './images.js';
@@ -63,14 +63,20 @@ const cors = (_req, res) => {
 
 // Live view of a room: how many sockets are on it and who they say they
 // are (awareness `user` states - peer-supplied, so clipped to the shape the
-// client renders anyway).
+// client renders anyway). Tabs of one browser share a profile id (`pid`)
+// and count as one player.
 const liveRoom = (entry) => {
   const doc = docs.get(entry.code);
   const players = [];
+  const seen = new Set();
   if (doc) {
     doc.awareness.getStates().forEach((state) => {
       const u = state?.user;
       if (!u || typeof u.name !== 'string') return;
+      if (typeof u.pid === 'number' || typeof u.pid === 'string') {
+        if (seen.has(u.pid)) return;
+        seen.add(u.pid);
+      }
       players.push({
         name: u.name.slice(0, 32),
         color: typeof u.color === 'string' && /^#[0-9a-fA-F]{3,8}$/.test(u.color) ? u.color : null,
@@ -186,11 +192,26 @@ export const createSyncServer = () => {
     });
   });
 
+  // Stop accepting, persist every room, close the sockets with 1012 so
+  // clients reconnect at once (docker stop / a deploy sends SIGTERM).
+  server.shutdown = async () => {
+    server.close();
+    await shutdownDocs();
+  };
+
   return server;
 };
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  createSyncServer().listen(PORT, () => {
+  const server = createSyncServer();
+  server.listen(PORT, () => {
     console.log(`dice-roller-sync listening on :${PORT}, data in ${DATA_DIR}`);
   });
+  const stop = (signal) => {
+    console.log(`${signal}: shutting down`);
+    setTimeout(() => process.exit(1), 5000).unref(); // never hang a restart
+    server.shutdown().then(() => process.exit(0), () => process.exit(1));
+  };
+  process.once('SIGTERM', () => stop('SIGTERM'));
+  process.once('SIGINT', () => stop('SIGINT'));
 }

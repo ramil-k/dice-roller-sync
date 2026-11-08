@@ -148,24 +148,28 @@ const rejectOutdated = (doc, conn) => {
 
 // After an awareness update from `conn`: verify or reject it by the `v` of
 // the states it owns. States with no fields yet are neither (keep waiting).
+// A verified connection is re-checked too: a browser-wide hub (the client's
+// SharedWorker) multiplexes several tabs over one socket, and a tab that
+// announces an older `v` later must not write through a connection another
+// tab verified.
 const checkVersion = (doc, conn) => {
-  if (conn.verified) return;
+  if (minClientVersion === 0) return;
   const owned = doc.conns.get(conn);
   if (!owned) return;
+  let announced = false;
   for (const clientId of owned) {
     const state = doc.awareness.getStates().get(clientId);
     if (!state || Object.keys(state).length === 0) continue;
     const v = Number(state.v);
-    if (Number.isFinite(v) && v >= minClientVersion) {
-      conn.verified = true;
-      clearTimeout(conn.verifyTimer);
-      const queued = conn.queued;
-      conn.queued = [];
-      for (const message of queued) messageListener(conn, doc, message);
-      return;
-    }
-    rejectOutdated(doc, conn);
-    return;
+    if (!(Number.isFinite(v) && v >= minClientVersion)) return rejectOutdated(doc, conn);
+    announced = true;
+  }
+  if (announced && !conn.verified) {
+    conn.verified = true;
+    clearTimeout(conn.verifyTimer);
+    const queued = conn.queued;
+    conn.queued = [];
+    for (const message of queued) messageListener(conn, doc, message);
   }
 };
 
@@ -195,6 +199,29 @@ const messageListener = (conn, doc, message) => {
     }
   } catch (err) {
     console.error('failed to handle message', err);
+  }
+};
+
+// Graceful shutdown: persist every live room, then close its sockets with
+// `code` (1012 "service restart" by default - clients reconnect right away
+// instead of backing off). The close events run the usual per-connection
+// cleanup afterwards.
+export const shutdownDocs = async (code = 1012, reason = 'server restart') => {
+  for (const doc of [...docs.values()]) {
+    if (persistence) {
+      try {
+        await persistence.writeState(doc.name, doc);
+      } catch (err) {
+        console.error(`failed to persist room ${doc.name} on shutdown`, err);
+      }
+    }
+    for (const conn of [...doc.conns.keys()]) {
+      try {
+        conn.close(code, reason);
+      } catch {
+        // already gone
+      }
+    }
   }
 };
 

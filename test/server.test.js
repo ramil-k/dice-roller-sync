@@ -1,7 +1,7 @@
 // End-to-end over a real socket: REST room lifecycle, ws gate, and the CRDT
 // property the whole project exists for - concurrent edits to different
 // fields both survive.
-import { mkdtempSync } from 'node:fs';
+import { existsSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { WebSocket } from 'ws';
@@ -188,6 +188,38 @@ describe('sync server', () => {
     good.provider.destroy();
   }, 15000); // the versionless client is only rejected after the 3 s verify timeout
 
+  it('rejects a verified connection whose later awareness announces an old version', async () => {
+    const { code } = await (await fetch(`${base}/rooms`, { method: 'POST' })).json();
+    const c = connect(code);
+    await c.synced;
+    const closed = new Promise((res) => c.provider.on('connection-close', (ev) => res(ev?.code)));
+    // a stale tab behind the same hub connection announces itself
+    c.provider.awareness.setLocalStateField('v', 1);
+    expect(await closed).toBe(4001);
+    c.provider.shouldConnect = false;
+    c.provider.destroy();
+  });
+
+  it('counts the tabs of one browser (same pid) as one player', async () => {
+    const { code } = await (await fetch(`${base}/rooms`, { method: 'POST' })).json();
+    const a = connect(code);
+    const b = connect(code);
+    const c = connect(code);
+    await Promise.all([a.synced, b.synced, c.synced]);
+    a.provider.awareness.setLocalStateField('user', { name: 'Ramil', color: '#e0464c', pid: 7 });
+    b.provider.awareness.setLocalStateField('user', { name: 'Ramil', color: '#e0464c', pid: 7 });
+    c.provider.awareness.setLocalStateField('user', { name: 'Guest', color: '#5fb98d' });
+    let info;
+    for (let i = 0; i < 40; i++) {
+      info = await (await fetch(`${base}/rooms/${code}`)).json();
+      if (info.players.length === 2) break;
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    expect(info.connections).toBe(3);
+    expect(info.players.map((p) => p.name).sort()).toEqual(['Guest', 'Ramil']);
+    for (const x of [a, b, c]) x.provider.destroy();
+  });
+
   it('persists room state for late joiners after everyone left', async () => {
     const { code } = await (await fetch(`${base}/rooms`, { method: 'POST' })).json();
     const a = connect(code);
@@ -202,5 +234,19 @@ describe('sync server', () => {
     await late.synced;
     await until(() => late.doc.getMap('meta').get('combat.round') === 7);
     late.provider.destroy();
+  });
+
+  it('shutdown persists rooms and closes sockets with 1012 (service restart)', async () => {
+    const { code } = await (await fetch(`${base}/rooms`, { method: 'POST' })).json();
+    const c = connect(code);
+    await c.synced;
+    c.doc.getMap('meta').set('combat.round', 11);
+    await new Promise((r) => setTimeout(r, 100));
+    const closed = new Promise((res) => c.provider.on('connection-close', (ev) => res(ev?.code)));
+    await server.shutdown();
+    expect(await closed).toBe(1012);
+    expect(existsSync(join(process.env.DATA_DIR, 'yjs', `${code}.yupdate`))).toBe(true);
+    c.provider.shouldConnect = false;
+    c.provider.destroy();
   });
 });

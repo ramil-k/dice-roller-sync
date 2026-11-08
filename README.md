@@ -36,7 +36,7 @@ different tokens/fields merge without losing either side.
 | `POST /claims/<code>` | take an invite (a character the GM handed out by link) |
 | `GET /characters/<id>/assignments` | who plays the character (any logged-in player) |
 | `GET /users`, `GET /games`, `POST /games`, `POST /games/<id>/end`, `GET /assignments`, `POST /assignments`, `DELETE /assignments/<id>` | game master only: players who ever logged in, one-shot games, handing characters out (campaign owner or a one-shot loan, to a player or as an invite code) and taking them back |
-| `WS /ws/<code>` | y-websocket sync protocol (yjs 13, awareness included); the client must announce its bridge version as awareness field `v` >= `MIN_CLIENT_VERSION` (default 2) - until it does its sync messages are queued, and a missing/lower version or 3 s of silence closes the socket with code 4001 (a stale tab running an old bundle cannot rewrite the room; new clients stop reconnecting on 4001 and ask for a reload) |
+| `WS /ws/<code>` | y-websocket sync protocol (yjs 13, awareness included); the client must announce its bridge version as awareness field `v` >= `MIN_CLIENT_VERSION` (default 2) - until it does its sync messages are queued, and a missing/lower version or 3 s of silence closes the socket with code 4001 (a stale tab running an old bundle cannot rewrite the room; new clients stop reconnecting on 4001 and ask for a reload); a verified connection whose later awareness state announces an old `v` is closed the same way (the client multiplexes tabs over one socket) |
 
 The REST routes answer `Access-Control-Allow-Origin: *` - room routes carry
 nothing beyond the room code itself, account routes authenticate with an
@@ -53,6 +53,13 @@ character can be lent to several games at once. An assignment without a
 player is an invite: its claim code goes into a link, the first player to
 open it takes the character. Awareness (the client's presence: cursors, focused fields, names,
 colors) is relayed between connected peers only and never persisted.
+Players carrying the same `user.pid` (tabs of one browser behind the
+client's shared hub) are listed once.
+
+Shutdown: on `SIGTERM`/`SIGINT` (docker stop, a deploy) the server persists
+every live room and closes the sockets with code 1012 (service restart), so
+clients reconnect at once instead of backing off; a hard 5 s timeout
+guarantees the process exits.
 
 The websocket handler is vendored in `src/wsdoc.js` (adapted from the
 reference y-websocket server) so the whole process runs on a single stable
