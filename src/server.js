@@ -10,13 +10,16 @@
 //        POST /rooms/<code>/images       -> { id, path } (body: raw image bytes, Content-Type
 //                                           image/png|jpeg|webp|gif, up to MAX_IMAGE_BYTES)
 //        GET  /rooms/<code>/images/<id>  -> the image, cacheable forever (content-addressed)
+//        POST /rooms/<code>/events       -> { first, last, count } (body: { events: [...] },
+//                                           the combat journal, see events.js)
+//        GET  /rooms/<code>/events       -> { events: [...] } (?since=<seq>, ?format=text)
 //        players, games, character assignments and Telegram login: see account-routes.js
 // WS:    /ws/<code>                      -> y-websocket sync protocol (rejects unknown codes;
 //                                           clients must announce awareness `v` >= MIN_CLIENT_VERSION)
 //
 // Persistence: merged Yjs update blobs under DATA_DIR + rooms.json (registry)
-// + uploaded images under DATA_DIR/images/<code>/ + accounts.json (players,
-// games, assignments).
+// + uploaded images under DATA_DIR/images/<code>/ + the combat journal under
+// DATA_DIR/events/<code>.ndjson + accounts.json (players, games, assignments).
 //
 // Env: BOT_TOKEN (Telegram bot, enables login), GM_IDS (comma-separated
 // Telegram ids of game masters), SESSION_SECRET (optional, defaults to one
@@ -28,6 +31,7 @@ import { docs, setMinClientVersion, setPersistence, setupWSConnection, shutdownD
 import { createFilePersistence } from './persistence.js';
 import { createRegistry } from './registry.js';
 import { createImageStore, IMAGE_TYPES } from './images.js';
+import { createEventStore, formatEventsText, validateBatch, MAX_BATCH_BYTES } from './events.js';
 import { isValidCode } from './codes.js';
 import { createAccounts } from './accounts.js';
 import { createAccountRoutes } from './account-routes.js';
@@ -44,6 +48,7 @@ const MIN_CLIENT_VERSION = Number(process.env.MIN_CLIENT_VERSION ?? 2);
 
 const registry = createRegistry(DATA_DIR);
 const images = createImageStore(`${DATA_DIR}/images`);
+const events = createEventStore(`${DATA_DIR}/events`);
 
 setPersistence(createFilePersistence(`${DATA_DIR}/yjs`));
 setMinClientVersion(MIN_CLIENT_VERSION);
@@ -121,6 +126,42 @@ const imageRoutes = async (req, res, pathname) => {
   return false;
 };
 
+// The combat journal: clients append what happened, anyone with the code
+// reads it back - as JSON, or as text (?format=text) to hand to a chat and
+// ask for the story of the fight.
+const eventRoutes = async (req, res, pathname, search) => {
+  const m = pathname.match(/^\/rooms\/([a-z0-9-]+)\/events$/);
+  if (!m) return false;
+  const room = m[1];
+  if (req.method === 'POST') {
+    if (!registry.has(room)) return json(res, 404, { error: 'unknown room' });
+    if (Number(req.headers['content-length']) > MAX_BATCH_BYTES) return json(res, 413, { error: 'batch too large' });
+    const buf = await readBody(req, MAX_BATCH_BYTES);
+    if (buf === null) return json(res, 413, { error: 'batch too large' });
+    let body;
+    try {
+      body = JSON.parse(buf.toString('utf8'));
+    } catch {
+      return json(res, 400, { error: 'body is not JSON' });
+    }
+    const checked = validateBatch(body);
+    if (checked.error) return json(res, 400, { error: checked.error });
+    const stored = events.append(room, checked.events);
+    return json(res, 201, { first: stored[0].seq, last: stored[stored.length - 1].seq, count: stored.length });
+  }
+  if (req.method === 'GET') {
+    if (!registry.has(room)) return json(res, 404, { error: 'unknown room' });
+    const since = Number(search.get('since') ?? 0);
+    const list = events.read(room, { since: Number.isSafeInteger(since) && since > 0 ? since : 0 });
+    if (search.get('format') === 'text') {
+      res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
+      return res.end(formatEventsText(list));
+    }
+    return json(res, 200, { events: list });
+  }
+  return false;
+};
+
 export const createSyncServer = () => {
   const botToken = process.env.BOT_TOKEN ?? '';
   const accountRoutes = createAccountRoutes({
@@ -139,7 +180,7 @@ export const createSyncServer = () => {
 
   const server = createServer(async (req, res) => {
     cors(req, res);
-    const { pathname } = new URL(req.url, 'http://x');
+    const { pathname, searchParams } = new URL(req.url, 'http://x');
 
     if (req.method === 'OPTIONS') {
       res.writeHead(204);
@@ -165,6 +206,12 @@ export const createSyncServer = () => {
     } catch (err) {
       console.error('image route failed', err);
       return json(res, 500, { error: 'image store failed' });
+    }
+    try {
+      if ((await eventRoutes(req, res, pathname, searchParams)) !== false) return;
+    } catch (err) {
+      console.error('event route failed', err);
+      return json(res, 500, { error: 'event store failed' });
     }
     try {
       if ((await accountRoutes(req, res, pathname)) !== false) return;

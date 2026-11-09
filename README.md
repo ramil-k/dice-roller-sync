@@ -20,6 +20,10 @@ different tokens/fields merge without losing either side.
   them as data URIs in the Yjs doc; files live under `data/images/<code>/`
   and are never deleted (a room's pictures are tiny next to what the CRDT
   used to carry). Bodies pass through nginx's `client_max_body_size 32m`.
+- Combat journal: the Yjs doc is a snapshot (gc on - removed tokens and
+  earlier hit points are gone), so the client also posts an append-only log
+  of what happened to `data/events/<code>.ndjson`; see
+  [Combat journal](#combat-journal) for the format.
 
 ## API
 
@@ -31,6 +35,8 @@ different tokens/fields merge without losing either side.
 | `GET /rooms/<code>` | `{exists: true, ...the same fields}` / 404 |
 | `POST /rooms/<code>/images` | upload one image (body: raw bytes, `Content-Type: image/png\|jpeg\|webp\|gif`, up to `MAX_IMAGE_BYTES`, 16 MiB by default); returns `{id, path}` - content-addressed, so the same bytes always get the same id |
 | `GET /rooms/<code>/images/<id>` | the image, `Cache-Control: immutable` |
+| `POST /rooms/<code>/events` | append a batch of journal events (body: `{events: [...]}` or a bare array, JSON, up to 200 events / 256 KB; each event up to 4 KB after normalization); returns `{first, last, count}` - the `seq` range assigned; 404 for an unknown room, 400 for an unknown type or a malformed event (nothing of the batch is stored then), 413 for an oversized body |
+| `GET /rooms/<code>/events` | `{events: [...]}` - the whole journal, oldest first; `?since=<seq>` returns only events with a greater `seq`; `?format=text` returns `text/plain`, one line per event (`#seq time type: sentence`), ready to be pasted into a chat with "write the story of this fight" |
 | `POST /auth/telegram` | body: the Telegram login widget payload; the server checks Telegram's signature with `BOT_TOKEN` and returns `{token, user: {id, name, username, photo, role}}` (`role` is `gm` for ids in `GM_IDS`); 401 on a bad signature, 503 without `BOT_TOKEN` |
 | `GET /me` | `{user, assignments}` - the characters this player plays now |
 | `POST /claims/<code>` | take an invite (a character the GM handed out by link) |
@@ -43,6 +49,43 @@ nothing beyond the room code itself, account routes authenticate with an
 `Authorization: Bearer` session token (no cookies, so a foreign page cannot
 use a player's session), and the client is a static site served from
 arbitrary GitHub Pages origins (forks included).
+
+### Combat journal
+
+`src/events.js`, `data/events/<code>.ndjson`: one JSON event per line,
+append-only (a batch is a single `appendFileSync`, so batches never
+interleave; a truncated tail from a crash is skipped on read). The server
+assigns `seq` (1, 2, 3... per room, gapless) and `t` (ISO 8601, server
+clock); everything else comes from the client as it was sent, with `by.name`
+clipped to 64 characters and a `by.color` that is not a `#hex` dropped.
+
+```json
+{ "seq": 12, "t": "2026-11-09T18:42:07.311Z",
+  "by": { "name": "Свирепый Рамиль", "color": "#58b7d8" },
+  "type": "hp", "data": { "nodeId": "4f1c…", "name": "Goblin", "from": 7, "to": 2 } }
+```
+
+`by` is the player's presence profile (the name and color peers see on the
+map), or `null`. `data` is a free object; the fields the text export prints:
+
+| `type` | `data` |
+| --- | --- |
+| `roll` | `formula` (`"1d20+5"`), `total`, `faces` (kept die results, in order), `label` (what was rolled for, optional), `crit` (`success` / `failure` on a natural 20 / 1, optional) |
+| `hp` | `nodeId`, `name`, `from`, `to` (null when the field was empty) |
+| `initiative` | `nodeId`, `name`, `value` |
+| `turn` | `round`, `activeNodeId`, `activeName` |
+| `token-add` | `nodeId`, `name`, `kind` (`player` / `monster`), `hp`, `hpMax`, `ac` |
+| `token-remove` | `nodeId`, `name` |
+| `rename` | `nodeId`, `from`, `to` |
+| `combat-reset` | - (back to round 1, nobody active; the tracker's Reset also removes every combatant, which arrives as `token-remove` events in the same batch) |
+
+Who posts what: the client that *made* an edit posts it (the room relays the
+edit to the others as a Yjs update, which they do not log), so each event
+carries its author and nothing is logged twice. The client sends batches
+from its queue a second after the last change and retries on failure, so
+`seq` order is the arrival order at the server, not necessarily the order
+across two players' clocks - the client-side timing is within a few seconds
+anyway. The journal is never trimmed or deleted.
 
 Accounts (`src/accounts.js`, `data/accounts.json`): players who logged in,
 games, and assignments - who plays which character. A `campaign`
